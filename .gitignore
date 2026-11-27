@@ -6,6 +6,7 @@ secrets.json
 forex_state.json
 paper_trades.json
 control.json
+telegram_offset.json
 scan.lock
 
 # --- generated output ---

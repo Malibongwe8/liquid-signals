@@ -11,6 +11,10 @@ on:
       loop_minutes:
         description: "Minutes to keep scanning before chaining the next run"
         default: "55"
+      command:
+        description: "Optional control command applied on startup (pause|resume)"
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -32,6 +36,7 @@ jobs:
       # PAT with workflow/dispatch rights; lets the job trigger the next run.
       GH_PAT: ${{ secrets.GH_PAT }}
       LOOP_MINUTES: ${{ inputs.loop_minutes || '55' }}
+      TG_COMMAND: ${{ inputs.command }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,13 +47,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Rolling cache carries the regime state + paper-trade ledger between runs.
+      # Rolling cache carries the regime state, paper-trade ledger, the pause
+      # flag and the Telegram update offset between runs.
       - name: Restore state
         uses: actions/cache/restore@v4
         with:
           path: |
             forex_state.json
             paper_trades.json
+            control.json
+            telegram_offset.json
           key: signals-state-${{ github.run_id }}
           restore-keys: |
             signals-state-
@@ -57,6 +65,12 @@ jobs:
       # with the chained dispatch this gives a continuous 5-minute cadence.
       - name: Scan every 5 minutes for ~55 minutes
         run: |
+          # Register the Telegram '/' command menu (idempotent).
+          python forex_signal.py --setup-bot || true
+          # Apply a control command passed in by a dispatch (pause|resume).
+          if [ -n "$TG_COMMAND" ]; then
+            python forex_signal.py --command "$TG_COMMAND" || true
+          fi
           if [ ! -f forex_state.json ]; then
             python forex_signal.py --seed   # first ever run: seed, no signal flood
           fi
@@ -66,6 +80,7 @@ jobs:
             if [ "$hhmm" -ge 1300 ] && [ "$hhmm" -lt 1305 ]; then
               python forex_signal.py --report || true   # 13:00 UTC = 21:00 Shanghai
             fi
+            # Polls the Telegram bot for /pause, /resume, /status, … then scans.
             python forex_signal.py || echo "scan error (continuing)"
             sleep 300
           done
@@ -77,6 +92,8 @@ jobs:
           path: |
             forex_state.json
             paper_trades.json
+            control.json
+            telegram_offset.json
           key: signals-state-${{ github.run_id }}
 
       # Keep the loop alive: queue the next run before this one exits. The

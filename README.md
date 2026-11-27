@@ -45,7 +45,7 @@ Each instrument is scanned on every timeframe in `timeframes` (5m / 15m / 1h).
 | `.github/workflows/`    | Scheduled runs on GitHub Actions                             |
 
 Runtime files created at run time (and git-ignored): `forex_state.json`,
-`paper_trades.json`, `control.json`, `charts/`.
+`paper_trades.json`, `control.json`, `telegram_offset.json`, `charts/`.
 
 ## Credentials
 
@@ -69,6 +69,32 @@ python forex_signal.py --help     # list every command
 
 ## Controls & stats
 
+You can drive the running system from **Telegram** (just message the bot) or
+from the **CLI** on any machine.
+
+### From Telegram
+
+The runner polls the bot on every scan and replies in-chat, so these work
+any time the loop is live:
+
+| Message      | What it does                                             |
+| ------------ | ------------------------------------------------------- |
+| `/status`    | Run state (PAUSED/RUNNING) + open positions + win-rates |
+| `/daily`     | Today's closed-trade stats                              |
+| `/weekly`    | Last 7 days stats                                       |
+| `/monthly`   | Last 30 days stats                                      |
+| `/positions` | List the currently open paper positions                 |
+| `/pause`     | Stop sending signals (the loop keeps running so you can resume) |
+| `/resume`    | Start sending signals again                             |
+| `/menu`      | List the commands                                       |
+
+Only messages from the configured chat id are honoured. `/pause` only **mutes**
+signals and paper trades — the loop stays alive precisely so `/resume` still
+reaches it. Run `python forex_signal.py --setup-bot` once to register the `/`
+menu in the Telegram client (the workflow also does this on every run).
+
+### From the CLI
+
 | Command      | What it does                                                        |
 | ------------ | ------------------------------------------------------------------- |
 | `--status`   | Run state (PAUSED/RUNNING) + open positions + today/7d/30d/all-time |
@@ -78,12 +104,12 @@ python forex_signal.py --help     # list every command
 | `--positions`| List the currently open paper positions                             |
 | `--pause`    | Stop sending signals everywhere                                     |
 | `--resume`   | Start sending signals again                                         |
+| `--setup-bot`| Register the Telegram `/` command menu                              |
 
-`--pause` writes a local `control.json` flag (so any local scan no-ops) **and**
-disables the GitHub workflow via the `gh` CLI, cancelling any in-flight run so
-the self-chaining loop stops. `--resume` re-enables the workflow **and starts a
-run**, so the loop restarts immediately. Because the live system runs on GitHub,
-the machine running these two commands needs `gh` authenticated:
+`--pause` writes the `control.json` flag **and** dispatches it to the live
+GitHub loop via the `gh` CLI (your local flag alone would not reach the runner).
+`--resume` dispatches the opposite and the loop unmutes on its next poll. The
+machine running these two needs `gh` authenticated:
 
 ```bash
 gh auth login        # one-off (or export GH_TOKEN=<token>)
@@ -93,9 +119,9 @@ If `gh` is missing or not logged in, `--pause`/`--resume` still toggle the local
 flag and print a clear message that the GitHub side was not changed.
 
 ```bash
-python forex_signal.py --pause     # stop
+python forex_signal.py --pause     # mute
 python forex_signal.py --status    # confirm: STATUS PAUSED
-python forex_signal.py --resume    # start again
+python forex_signal.py --resume    # unmute
 ```
 
 ## Running on GitHub

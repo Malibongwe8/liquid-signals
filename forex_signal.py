@@ -48,6 +48,7 @@ ROOT = Path(__file__).resolve().parent
 CHARTS = ROOT / "charts"
 STATE = ROOT / "forex_state.json"
 CONTROL = ROOT / "control.json"
+OFFSET = ROOT / "telegram_offset.json"
 WORKFLOW = "signal-scan"
 
 
@@ -94,29 +95,29 @@ def _repo_slug():
         return None
 
 
-def set_paused(paused):
-    """Pause/ resume locally (control.json) and on the GitHub runner (gh)."""
+def set_paused(paused, remote=False):
+    """Record the pause flag in control.json.
+
+    ``remote=True`` (used by the CLI on your own machine) also dispatches the
+    change to the running GitHub loop, because your local control.json is not
+    the one the runner uses. The Telegram handler runs *on the runner*, so it
+    calls this with ``remote=False``.
+    """
     _write_control(paused)
-    print(f"scheduler -> {'PAUSED' if paused else 'RUNNING'}  (control.json)")
+    print(f"signals -> {'PAUSED' if paused else 'RUNNING'}  (control.json)")
+    if remote:
+        _dispatch("pause" if paused else "resume")
+
+
+def _dispatch(command):
+    """Ask the live GitHub loop to apply a command (pause/resume)."""
     repo = _repo_slug()
     if not repo:
-        print("  (no GitHub remote detected; only local scans are affected)")
+        print("  (no GitHub remote detected; only this local copy is affected)")
         return
-    verb = "disable" if paused else "enable"
-    rc, out = _gh("workflow", verb, WORKFLOW, "--repo", repo)
-    print(f"  gh workflow {verb} {WORKFLOW}: {'ok' if rc == 0 else out}")
-    if paused:
-        rc, ids = _gh("run", "list", "--repo", repo, "-w", WORKFLOW,
-                      "--status", "in_progress", "--json", "databaseId",
-                      "-q", ".[].databaseId")
-        if rc == 0:
-            for rid in ids.split():
-                if rid.strip().isdigit():
-                    _gh("run", "cancel", rid.strip(), "--repo", repo)
-                    print(f"  cancelled in-flight run {rid.strip()}")
-    else:
-        rc, out = _gh("workflow", "run", WORKFLOW, "--repo", repo, "--ref", "main")
-        print(f"  started a run: {'ok' if rc == 0 else out}")
+    rc, out = _gh("workflow", "run", WORKFLOW, "--repo", repo, "--ref", "main",
+                  "-f", f"command={command}")
+    print(f"  dispatched command={command!r}: {'ok' if rc == 0 else out}")
 
 
 def params_for(cfg, asset_class):
@@ -377,6 +378,106 @@ def send_report(cfg):
     return res
 
 
+HELP_TG = """\
+liquid-signals bot commands
+
+/menu    - show this list
+/status  - run state + open positions + win-rates
+/daily   - today's closed-trade stats
+/weekly  - last 7 days stats
+/monthly - last 30 days stats
+/positions - list open paper positions
+/pause   - stop sending signals (loop stays alive)
+/resume  - resume sending signals"""
+
+
+def setup_bot():
+    """Register the '/' command menu with Telegram."""
+    cmds = [
+        {"command": "status", "description": "Run state + win-rates"},
+        {"command": "daily", "description": "Today's stats"},
+        {"command": "weekly", "description": "Last 7 days stats"},
+        {"command": "monthly", "description": "Last 30 days stats"},
+        {"command": "positions", "description": "Open paper positions"},
+        {"command": "pause", "description": "Stop sending signals"},
+        {"command": "resume", "description": "Resume sending signals"},
+        {"command": "menu", "description": "List commands"},
+    ]
+    res = telegram.set_commands(cmds)
+    print("setMyCommands ok=", res.get("ok"))
+
+
+def run_command(text, cfg):
+    """Map an incoming '/command' to its reply text (and any side effect)."""
+    cmd = text.split()[0].split("@")[0].lower()
+    db = tradebook.load()
+    if cmd == "/pause":
+        set_paused(True)
+        return "PAUSED - signals muted. Send /resume to restart."
+    if cmd == "/resume":
+        set_paused(False)
+        return "RUNNING - signals resume on the next scan."
+    if cmd in ("/status", "/stats"):
+        return tradebook.status_text(db, _paused())
+    if cmd == "/daily":
+        return (f"DAILY  {tradebook.today()}\n"
+                + tradebook.stats_line("Today", tradebook.stats(db, tradebook.today())))
+    if cmd == "/weekly":
+        return ("WEEKLY  (last 7 days)\n"
+                + tradebook.stats_line("Last 7d", tradebook.stats_since(db, 7)))
+    if cmd == "/monthly":
+        return ("MONTHLY  (last 30 days)\n"
+                + tradebook.stats_line("Last 30d", tradebook.stats_since(db, 30)))
+    if cmd == "/positions":
+        return tradebook.positions_text(db)
+    if cmd in ("/menu", "/help", "/start"):
+        return HELP_TG
+    return "Unknown command.\n\n" + HELP_TG
+
+
+def handle_commands(cfg):
+    """Poll Telegram for operator commands and act on them.
+
+    Only messages from the configured chat are honoured. The update offset is
+    persisted in telegram_offset.json (carried in the runner cache) so a command
+    is never handled twice across chained runs.
+    """
+    chat = telegram.chat_id()
+    try:
+        offset = json.loads(OFFSET.read_text())["offset"] if OFFSET.exists() else None
+    except Exception:
+        offset = None
+    try:
+        res = telegram.get_updates(offset=offset, timeout=0)
+    except Exception as exc:
+        print(f"  [tg] poll failed: {exc}")
+        return
+    if not res.get("ok"):
+        print(f"  [tg] poll error: {res.get('description')}")
+        return
+
+    last = offset
+    for u in res.get("result", []):
+        last = u["update_id"] + 1
+        msg = u.get("message") or {}
+        text = (msg.get("text") or "").strip()
+        from_chat = (msg.get("chat") or {}).get("id")
+        if not text.startswith("/"):
+            continue
+        if chat and from_chat != chat:
+            print(f"  [tg] ignored command from foreign chat {from_chat}")
+            continue
+        reply = run_command(text, cfg)
+        try:
+            telegram.send_message(from_chat or chat, reply)
+        except Exception as exc:
+            print(f"  [tg] reply failed: {exc}")
+        print(f"  [tg] {text.split()[0]} -> {reply.splitlines()[0]}")
+
+    if last is not None:
+        OFFSET.write_text(json.dumps({"offset": last}))
+
+
 HELP = """\
 liquid-signals - intraday signal engine
 
@@ -392,8 +493,12 @@ liquid-signals - intraday signal engine
   python forex_signal.py --monthly    last 30 days stats
   python forex_signal.py --positions  list the open paper positions
 
-  python forex_signal.py --pause      stop sending (disables the GitHub loop)
-  python forex_signal.py --resume     resume sending (re-enables the loop)
+  python forex_signal.py --pause      stop sending signals (mutes the loop)
+  python forex_signal.py --resume     resume sending signals
+  python forex_signal.py --setup-bot  register the Telegram '/' command menu
+
+The same controls are available from Telegram: send /status, /daily, /weekly,
+/monthly, /positions, /pause, /resume or /menu to the bot.
 """
 
 
@@ -402,8 +507,10 @@ def main():
     args = sys.argv[1:]
 
     if not args:
+        handle_commands(cfg)
         if _paused():
-            print("PAUSED - not scanning. Run: python forex_signal.py --resume")
+            print("PAUSED - not scanning. Send /resume or run: "
+                  "python forex_signal.py --resume")
             return
         scan(cfg)
         return
@@ -411,9 +518,19 @@ def main():
     if args[0] in ("-h", "--help", "help"):
         print(HELP)
     elif "--pause" in args:
-        set_paused(True)
+        set_paused(True, remote=True)
     elif "--resume" in args:
-        set_paused(False)
+        set_paused(False, remote=True)
+    elif "--poll-commands" in args:
+        handle_commands(cfg)
+    elif "--command" in args:
+        cmd = args[args.index("--command") + 1].strip().lower() if len(args) > 1 else ""
+        if cmd in ("pause", "resume"):
+            set_paused(cmd == "pause")
+        else:
+            print(f"ignored unknown command: {cmd!r}")
+    elif "--setup-bot" in args:
+        setup_bot()
     elif "--positions" in args:
         print(tradebook.positions_text(tradebook.load()))
     elif "--daily" in args:
@@ -438,6 +555,7 @@ def main():
         interval = cfg.get("poll_seconds", 300)
         print(f"watching instruments every {interval}s (Ctrl-C to stop)")
         while True:
+            handle_commands(cfg)
             if _paused():
                 print("  paused - not scanning")
             else:

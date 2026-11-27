@@ -71,6 +71,23 @@ def send_message(chat_id, text):
     return _api("sendMessage", {"chat_id": chat_id, "text": text})
 
 
+def get_updates(offset=None, timeout=0):
+    """Fetch new incoming messages.
+
+    ``offset`` is the next update_id to request (> last seen). Callers persist
+    it so the same command is never handled twice across runs.
+    """
+    params = {"timeout": timeout, "allowed_updates": json.dumps(["message"])}
+    if offset is not None:
+        params["offset"] = offset
+    return _api("getUpdates", params)
+
+
+def set_commands(commands):
+    """Register the '/' command menu shown in the Telegram client."""
+    return _api("setMyCommands", {"commands": json.dumps(commands)})
+
+
 def send_photo(chat_id, png_path, caption=""):
     boundary = "----tg" + uuid.uuid4().hex
     png = Path(png_path).read_bytes()
