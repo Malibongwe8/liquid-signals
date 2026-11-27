@@ -45,7 +45,7 @@ Each instrument is scanned on every timeframe in `timeframes` (5m / 15m / 1h).
 | `.github/workflows/`    | Scheduled runs on GitHub Actions                             |
 
 Runtime files created at run time (and git-ignored): `forex_state.json`,
-`paper_trades.json`, `charts/`.
+`paper_trades.json`, `control.json`, `charts/`.
 
 ## Credentials
 
@@ -59,11 +59,42 @@ The Telegram token/chat id are **never committed**. Resolution order:
 
 ```bash
 pip install -r requirements.txt
-python forex_signal.py            # one scan
+python forex_signal.py            # one scan (sends any new signals)
 python forex_signal.py --seed     # seed state on first run (no message flood)
 python forex_signal.py --test     # send one test chart to Telegram
 python forex_signal.py --report   # send the daily win-rate report
 python forex_signal.py --watch    # loop every poll_seconds
+python forex_signal.py --help     # list every command
+```
+
+## Controls & stats
+
+| Command      | What it does                                                        |
+| ------------ | ------------------------------------------------------------------- |
+| `--status`   | Run state (PAUSED/RUNNING) + open positions + today/7d/30d/all-time |
+| `--daily`    | Today's closed-trade stats (wins/losses, win-rate, net R)           |
+| `--weekly`   | Last 7 days stats                                                   |
+| `--monthly`  | Last 30 days stats                                                  |
+| `--positions`| List the currently open paper positions                             |
+| `--pause`    | Stop sending signals everywhere                                     |
+| `--resume`   | Start sending signals again                                         |
+
+`--pause` writes a local `control.json` flag (so any local scan no-ops) **and**
+disables the GitHub workflow via the `gh` CLI, cancelling any in-flight run.
+`--resume` reverses both. Because the live system runs on GitHub, the machine
+running these two commands needs `gh` authenticated:
+
+```bash
+gh auth login        # one-off (or export GH_TOKEN=<token>)
+```
+
+If `gh` is missing or not logged in, `--pause`/`--resume` still toggle the local
+flag and print a clear message that the GitHub side was not changed.
+
+```bash
+python forex_signal.py --pause     # stop
+python forex_signal.py --status    # confirm: STATUS PAUSED
+python forex_signal.py --resume    # start again
 ```
 
 ## Running on GitHub

@@ -5,6 +5,7 @@ secrets.json
 # --- runtime state (persisted by the GitHub Actions cache, not in git) ---
 forex_state.json
 paper_trades.json
+control.json
 scan.lock
 
 # --- generated output ---

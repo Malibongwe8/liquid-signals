@@ -142,33 +142,92 @@ def _day(ts):
     return datetime.fromtimestamp(ts, TZ).date().isoformat()
 
 
+def today():
+    """Today's date string (YYYY-MM-DD) in Asia/Shanghai."""
+    return _day(int(time.time()))
+
+
+def _summarize(done):
+    wins = sum(1 for t in done if t["status"] == "win")
+    total = len(done)
+    return {
+        "closed": total,
+        "wins": wins,
+        "losses": total - wins,
+        "winrate": (wins / total * 100) if total else 0.0,
+        "units": sum(t["result_units"] for t in done),
+        "r": sum(t["r"] for t in done),
+    }
+
+
+def _open_count(db):
+    return sum(1 for t in db["trades"] if t["status"] == "open")
+
+
 def stats(db, day=None):
     """Win-rate summary. ``day`` (YYYY-MM-DD in Asia/Shanghai) filters closes."""
     done = [t for t in db["trades"] if t["status"] in ("win", "loss")]
     if day:
         done = [t for t in done if _day(t["closed_at"]) == day]
-    wins = sum(1 for t in done if t["status"] == "win")
-    total = len(done)
-    units = sum(t["result_units"] for t in done)
-    rsum = sum(t["r"] for t in done)
-    open_n = sum(1 for t in db["trades"] if t["status"] == "open")
-    return {
-        "day": day,
-        "closed": total,
-        "wins": wins,
-        "losses": total - wins,
-        "winrate": (wins / total * 100) if total else 0.0,
-        "units": units,
-        "r": rsum,
-        "open": open_n,
-    }
+    s = _summarize(done)
+    s["day"] = day
+    s["open"] = _open_count(db)
+    return s
+
+
+def stats_since(db, days):
+    """Win-rate summary over the last ``days`` calendar days (inclusive)."""
+    end = datetime.fromtimestamp(int(time.time()), TZ).date()
+    start = end - timedelta(days=days - 1)
+    done = [t for t in db["trades"] if t["status"] in ("win", "loss")
+            and start.isoformat() <= _day(t["closed_at"]) <= end.isoformat()]
+    s = _summarize(done)
+    s["days"] = days
+    s["open"] = _open_count(db)
+    return s
+
+
+def stats_line(label, s):
+    """One-line summary used by the terminal commands."""
+    return (f"{label:<10} {s['wins']}W / {s['losses']}L   "
+            f"winrate {s['winrate']:.0f}%   ({s['closed']} closed)   "
+            f"net {s['units']:+.0f} units   ({s['r']:+.2f}R)")
+
+
+def positions_text(db):
+    """Human-readable list of currently open paper positions."""
+    open_trades = [t for t in db["trades"] if t["status"] == "open"]
+    if not open_trades:
+        return "No open paper positions."
+    lines = [f"OPEN POSITIONS  ({len(open_trades)})"]
+    for t in open_trades:
+        d = t["decimals"]
+        lines.append(
+            f"  #{t['id']:<3} {t['key']:<18} {t['direction']:<4} "
+            f"entry {t['entry']:.{d}f}  TP {t['tp']:.{d}f}  SL {t['sl']:.{d}f}  "
+            f"[{t['opened_human']}]")
+    return "\n".join(lines)
+
+
+def status_text(db, paused):
+    """Compact dashboard: run state, open book, and win-rates over time."""
+    lines = [
+        f"STATUS   {'PAUSED' if paused else 'RUNNING'}",
+        "",
+        positions_text(db),
+        "",
+        stats_line("Today", stats(db, today())),
+        stats_line("Last 7d", stats_since(db, 7)),
+        stats_line("Last 30d", stats_since(db, 30)),
+        stats_line("All-time", stats(db)),
+    ]
+    return "\n".join(lines)
 
 
 def report_text(db):
-    today = _day(int(time.time()))
-    ds, os_ = stats(db, today), stats(db)
+    ds, os_ = stats(db, today()), stats(db)
     lines = [
-        f"DAILY REPORT  {today}",
+        f"DAILY REPORT  {today()}",
         "",
         f"Today:  {ds['wins']}W / {ds['losses']}L  "
         f"winrate {ds['winrate']:.0f}%  ({ds['closed']} closed)",

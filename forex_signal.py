@@ -22,11 +22,14 @@ Usage:
     python forex_signal.py            # one pass
     python forex_signal.py --test     # render a chart + send one TEST message
     python forex_signal.py --watch    # loop every poll_seconds
+    python forex_signal.py --help     # status/stats/positions/pause/resume
 """
 from __future__ import annotations
 
 import fcntl
 import json
+import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -44,10 +47,73 @@ import tradebook
 ROOT = Path(__file__).resolve().parent
 CHARTS = ROOT / "charts"
 STATE = ROOT / "forex_state.json"
+CONTROL = ROOT / "control.json"
+WORKFLOW = "signal-scan"
 
 
 def load_config():
     return json.loads((ROOT / "config.json").read_text())
+
+
+def _paused():
+    """True when the operator has paused signal sending (control.json)."""
+    if CONTROL.exists():
+        try:
+            return bool(json.loads(CONTROL.read_text()).get("paused"))
+        except Exception:
+            return False
+    return False
+
+
+def _write_control(paused):
+    CONTROL.write_text(json.dumps({
+        "paused": paused,
+        "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    }, indent=2))
+
+
+def _gh(*cmd):
+    """Run the gh CLI; returns (returncode, combined output)."""
+    try:
+        r = subprocess.run(["gh", *cmd], capture_output=True, text=True, timeout=60)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except FileNotFoundError:
+        return 127, "gh CLI not found"
+    except Exception as exc:  # pragma: no cover
+        return 1, str(exc)
+
+
+def _repo_slug():
+    """owner/name parsed from the git 'origin' remote, or None."""
+    try:
+        r = subprocess.run(["git", "-C", str(ROOT), "remote", "get-url", "origin"],
+                           capture_output=True, text=True, timeout=15)
+        m = re.search(r"github\.com[:/]([^/]+/[^/\s]+?)(?:\.git)?\s*$", r.stdout.strip())
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def set_paused(paused):
+    """Pause/ resume locally (control.json) and on the GitHub runner (gh)."""
+    _write_control(paused)
+    print(f"scheduler -> {'PAUSED' if paused else 'RUNNING'}  (control.json)")
+    repo = _repo_slug()
+    if not repo:
+        print("  (no GitHub remote detected; only local scans are affected)")
+        return
+    verb = "disable" if paused else "enable"
+    rc, out = _gh("workflow", verb, WORKFLOW, "--repo", repo)
+    print(f"  gh workflow {verb} {WORKFLOW}: {'ok' if rc == 0 else out}")
+    if paused:
+        rc, ids = _gh("run", "list", "--repo", repo, "-w", WORKFLOW,
+                      "--status", "in_progress", "--json", "databaseId",
+                      "-q", ".[].databaseId")
+        if rc == 0:
+            for rid in ids.split():
+                if rid.strip().isdigit():
+                    _gh("run", "cancel", rid.strip(), "--repo", repo)
+                    print(f"  cancelled in-flight run {rid.strip()}")
 
 
 def params_for(cfg, asset_class):
@@ -195,6 +261,9 @@ def caption_for(a, s, params, now):
 
 def scan(cfg, send=True):
     """Serialize scans across processes so trades are never settled twice."""
+    if send and _paused():
+        print("  [paused] sending is paused (run: python forex_signal.py --resume)")
+        return []
     lock = open(ROOT / "scan.lock", "w")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -305,22 +374,74 @@ def send_report(cfg):
     return res
 
 
+HELP = """\
+liquid-signals - intraday signal engine
+
+  python forex_signal.py              one scan now (sends any new signals)
+  python forex_signal.py --watch      loop a scan every poll_seconds
+  python forex_signal.py --seed       record baselines without sending
+  python forex_signal.py --test       send one TEST chart to Telegram
+  python forex_signal.py --report     send the daily report to Telegram
+
+  python forex_signal.py --status     run state + open book + win-rates
+  python forex_signal.py --daily      today's closed-trade stats
+  python forex_signal.py --weekly     last 7 days stats
+  python forex_signal.py --monthly    last 30 days stats
+  python forex_signal.py --positions  list the open paper positions
+
+  python forex_signal.py --pause      stop sending (disables the GitHub loop)
+  python forex_signal.py --resume     resume sending (re-enables the loop)
+"""
+
+
 def main():
     cfg = load_config()
-    if "--test" in sys.argv:
+    args = sys.argv[1:]
+
+    if not args:
+        if _paused():
+            print("PAUSED - not scanning. Run: python forex_signal.py --resume")
+            return
+        scan(cfg)
+        return
+
+    if args[0] in ("-h", "--help", "help"):
+        print(HELP)
+    elif "--pause" in args:
+        set_paused(True)
+    elif "--resume" in args:
+        set_paused(False)
+    elif "--positions" in args:
+        print(tradebook.positions_text(tradebook.load()))
+    elif "--daily" in args:
+        db = tradebook.load()
+        print(f"DAILY STATS  {tradebook.today()}")
+        print(tradebook.stats_line("Today", tradebook.stats(db, tradebook.today())))
+    elif "--weekly" in args:
+        print("WEEKLY STATS  (last 7 days)")
+        print(tradebook.stats_line("Last 7d", tradebook.stats_since(tradebook.load(), 7)))
+    elif "--monthly" in args:
+        print("MONTHLY STATS  (last 30 days)")
+        print(tradebook.stats_line("Last 30d", tradebook.stats_since(tradebook.load(), 30)))
+    elif "--status" in args or "--stats" in args:
+        print(tradebook.status_text(tradebook.load(), _paused()))
+    elif "--test" in args:
         send_test(cfg)
-    elif "--report" in sys.argv:
+    elif "--report" in args:
         send_report(cfg)
-    elif "--seed" in sys.argv:
+    elif "--seed" in args:
         scan(cfg, send=False)
-    elif "--watch" in sys.argv:
+    elif "--watch" in args:
         interval = cfg.get("poll_seconds", 300)
         print(f"watching instruments every {interval}s (Ctrl-C to stop)")
         while True:
-            scan(cfg)
+            if _paused():
+                print("  paused - not scanning")
+            else:
+                scan(cfg)
             time.sleep(interval)
     else:
-        scan(cfg)
+        print(HELP)
 
 
 if __name__ == "__main__":
