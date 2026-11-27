@@ -6,7 +6,11 @@ on:
   # delays scheduled events (which it frequently does).
   schedule:
     - cron: "0 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      loop_minutes:
+        description: "Minutes to keep scanning before chaining the next run"
+        default: "55"
 
 permissions:
   contents: read
@@ -27,6 +31,7 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       # PAT with workflow/dispatch rights; lets the job trigger the next run.
       GH_PAT: ${{ secrets.GH_PAT }}
+      LOOP_MINUTES: ${{ inputs.loop_minutes || '55' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +60,7 @@ jobs:
           if [ ! -f forex_state.json ]; then
             python forex_signal.py --seed   # first ever run: seed, no signal flood
           fi
-          end=$(( $(date +%s) + 3300 ))
+          end=$(( $(date +%s) + ${LOOP_MINUTES:-55} * 60 ))
           while [ "$(date +%s)" -lt "$end" ]; do
             hhmm=$(date -u +%H%M)
             if [ "$hhmm" -ge 1300 ] && [ "$hhmm" -lt 1305 ]; then
@@ -76,6 +81,7 @@ jobs:
 
       # Keep the loop alive: queue the next run before this one exits. The
       # concurrency group makes it wait, so there is no gap and no overlap.
+      # GH_TOKEN must be the PAT (the default GITHUB_TOKEN cannot dispatch).
       - name: Chain the next run
         if: always()
         run: |
@@ -83,5 +89,6 @@ jobs:
             echo "GH_PAT secret not set - the hourly schedule is the only kick."
             exit 0
           fi
-          gh workflow run signal-scan --repo "$GITHUB_REPOSITORY" --ref main
+          GH_TOKEN="$GH_PAT" gh workflow run signal-scan \
+            --repo "$GITHUB_REPOSITORY" --ref main
           echo "queued the next signal-scan run"
