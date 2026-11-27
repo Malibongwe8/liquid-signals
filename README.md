@@ -69,16 +69,25 @@ python forex_signal.py --watch    # loop every poll_seconds
 ## Running on GitHub
 
 The workflow [`.github/workflows/signals.yml`](.github/workflows/signals.yml)
-runs a scan every 5 minutes and sends the daily report at 21:00 Asia/Shanghai.
-Set two repository secrets first (**Settings → Secrets and variables → Actions**):
+keeps a job alive that **scans every 5 minutes**, and sends the daily report at
+21:00 Asia/Shanghai. Set two repository secrets first
+(**Settings → Secrets and variables → Actions**):
 
 | Secret              | Value                     |
 | ------------------- | ------------------------- |
 | `TELEGRAM_TOKEN`    | your bot token            |
 | `TELEGRAM_CHAT_ID`  | your chat id              |
 
+**Why a loop instead of a 5-minute cron?** GitHub's scheduled triggers are
+unreliable at short intervals (they can be delayed or skipped), so the job is
+kicked twice an hour (`:00` and `:30`) and each kick runs its own 5-minute scan
+loop for ~30 minutes. That gives a continuous 5-minute cadence with only two
+cron events per hour. A `concurrency` group guarantees the two loops never
+overlap (overlapping scans would double-settle trades). This needs a **public**
+repository, where GitHub-hosted Actions minutes are free and unlimited.
+
 The regime state and paper-trade ledger are carried between runs with a rolling
-`actions/cache` entry, so nothing sensitive or noisy is committed back to git.
+`actions/cache` entry, so nothing is committed back to git on every run.
 
 > Note: GitHub disables scheduled workflows after ~60 days of repository
 > inactivity. Open the repo, or hit **Run workflow**, to keep it alive.
