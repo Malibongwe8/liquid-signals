@@ -114,6 +114,9 @@ def set_paused(paused):
                 if rid.strip().isdigit():
                     _gh("run", "cancel", rid.strip(), "--repo", repo)
                     print(f"  cancelled in-flight run {rid.strip()}")
+    else:
+        rc, out = _gh("workflow", "run", WORKFLOW, "--repo", repo, "--ref", "main")
+        print(f"  started a run: {'ok' if rc == 0 else out}")
 
 
 def params_for(cfg, asset_class):

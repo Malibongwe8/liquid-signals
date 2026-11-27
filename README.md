@@ -80,9 +80,10 @@ python forex_signal.py --help     # list every command
 | `--resume`   | Start sending signals again                                         |
 
 `--pause` writes a local `control.json` flag (so any local scan no-ops) **and**
-disables the GitHub workflow via the `gh` CLI, cancelling any in-flight run.
-`--resume` reverses both. Because the live system runs on GitHub, the machine
-running these two commands needs `gh` authenticated:
+disables the GitHub workflow via the `gh` CLI, cancelling any in-flight run so
+the self-chaining loop stops. `--resume` re-enables the workflow **and starts a
+run**, so the loop restarts immediately. Because the live system runs on GitHub,
+the machine running these two commands needs `gh` authenticated:
 
 ```bash
 gh auth login        # one-off (or export GH_TOKEN=<token>)
@@ -100,28 +101,39 @@ python forex_signal.py --resume    # start again
 ## Running on GitHub
 
 The workflow [`.github/workflows/signals.yml`](.github/workflows/signals.yml)
-keeps a job alive that **scans every 5 minutes**, and sends the daily report at
-21:00 Asia/Shanghai. Set two repository secrets first
+runs **continuously and automatically**: one job stays alive for ~55 minutes
+scanning every 5 minutes, then queues the next job, and so on forever. It also
+sends the daily report at ~21:00 Asia/Shanghai.
+
+Set three repository secrets first
 (**Settings → Secrets and variables → Actions**):
 
-| Secret              | Value                     |
-| ------------------- | ------------------------- |
-| `TELEGRAM_TOKEN`    | your bot token            |
-| `TELEGRAM_CHAT_ID`  | your chat id              |
+| Secret              | Value                                                        |
+| ------------------- | ------------------------------------------------------------ |
+| `TELEGRAM_TOKEN`    | your bot token                                               |
+| `TELEGRAM_CHAT_ID`  | your chat id                                                 |
+| `GH_PAT`            | a token that can re-trigger the workflow (see below)         |
 
-**Why a loop instead of a 5-minute cron?** GitHub's scheduled triggers are
-unreliable at short intervals (they can be delayed or skipped), so the job is
-kicked twice an hour (`:00` and `:30`) and each kick runs its own 5-minute scan
-loop for ~30 minutes. That gives a continuous 5-minute cadence with only two
-cron events per hour. A `concurrency` group guarantees the two loops never
-overlap (overlapping scans would double-settle trades). This needs a **public**
-repository, where GitHub-hosted Actions minutes are free and unlimited.
+**Why a self-chaining loop instead of a plain cron?** GitHub's scheduled
+triggers are unreliable — they are frequently delayed or dropped entirely, and
+a job cannot re-trigger itself with the default `GITHUB_TOKEN`. So each job ends
+by dispatching the next run through `GH_PAT`; a `concurrency` group makes that
+next run queue behind the current one, giving a gap-free 5-minute cadence with
+no overlaps. The hourly `schedule` is kept only as a backup kicker. This needs a
+**public** repository, where GitHub-hosted Actions minutes are free/unlimited.
+
+`GH_PAT` must be able to start workflows:
+
+* **Classic** token with the `repo` + `workflow` scopes, or
+* **Fine-grained** token with **Actions: read and write** on this repository.
 
 The regime state and paper-trade ledger are carried between runs with a rolling
 `actions/cache` entry, so nothing is committed back to git on every run.
 
-> Note: GitHub disables scheduled workflows after ~60 days of repository
-> inactivity. Open the repo, or hit **Run workflow**, to keep it alive.
+> If the chain ever stops (e.g. `GH_PAT` expires), the hourly schedule will
+> restart it; otherwise run `python forex_signal.py --resume` to kick it, or use
+> **Run workflow** in the Actions tab.
+
 
 ## Adding or changing instruments
 

@@ -1,15 +1,18 @@
 name: signal-scan
 
 on:
+  # Backup kicker only. The real driver is the self-chaining dispatch at the
+  # end of each job, which keeps the loop alive even when GitHub drops or
+  # delays scheduled events (which it frequently does).
   schedule:
-    - cron: "0 * * * *"    # top of the hour  -> start a ~30-minute scanning loop
-    - cron: "30 * * * *"   # half past        -> start the next ~30-minute loop
-  workflow_dispatch: {}     # manual run from the Actions tab
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
-# Only one scanning loop at a time: overlapping runs would double-settle trades.
+# Only one scanning loop at a time. Each job ends by dispatching the next one,
+# which queues behind this group, so runs never overlap and never double-settle.
 concurrency:
   group: signal-scan
   cancel-in-progress: false
@@ -17,11 +20,13 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 33
+    timeout-minutes: 70
     env:
       MPLBACKEND: Agg
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      # PAT with workflow/dispatch rights; lets the job trigger the next run.
+      GH_PAT: ${{ secrets.GH_PAT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -43,23 +48,19 @@ jobs:
           restore-keys: |
             signals-state-
 
-      - name: Daily report (13:00 UTC = 21:00 Asia/Shanghai)
-        if: github.event_name == 'schedule'
-        run: |
-          if [ "$(date -u +%H)" = "13" ]; then
-            python forex_signal.py --report
-          fi
-
-      # A cron every 5 minutes is unreliable, so instead each job stays alive
-      # and scans every 5 minutes itself. Two overlapping half-hour jobs give a
-      # continuous 5-minute cadence with only hourly cron kicks.
-      - name: Scan every 5 minutes for ~30 minutes
+      # One job stays alive for ~55 minutes, scanning every 5 minutes. Combined
+      # with the chained dispatch this gives a continuous 5-minute cadence.
+      - name: Scan every 5 minutes for ~55 minutes
         run: |
           if [ ! -f forex_state.json ]; then
-            python forex_signal.py --seed   # first run: seed state, no message flood
+            python forex_signal.py --seed   # first ever run: seed, no signal flood
           fi
-          end=$(( $(date +%s) + 1740 ))
+          end=$(( $(date +%s) + 3300 ))
           while [ "$(date +%s)" -lt "$end" ]; do
+            hhmm=$(date -u +%H%M)
+            if [ "$hhmm" -ge 1300 ] && [ "$hhmm" -lt 1305 ]; then
+              python forex_signal.py --report || true   # 13:00 UTC = 21:00 Shanghai
+            fi
             python forex_signal.py || echo "scan error (continuing)"
             sleep 300
           done
@@ -72,3 +73,15 @@ jobs:
             forex_state.json
             paper_trades.json
           key: signals-state-${{ github.run_id }}
+
+      # Keep the loop alive: queue the next run before this one exits. The
+      # concurrency group makes it wait, so there is no gap and no overlap.
+      - name: Chain the next run
+        if: always()
+        run: |
+          if [ -z "$GH_PAT" ]; then
+            echo "GH_PAT secret not set - the hourly schedule is the only kick."
+            exit 0
+          fi
+          gh workflow run signal-scan --repo "$GITHUB_REPOSITORY" --ref main
+          echo "queued the next signal-scan run"
