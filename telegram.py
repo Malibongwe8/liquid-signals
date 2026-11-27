@@ -67,8 +67,11 @@ def _api(method, params=None):
         return json.loads(resp.read())
 
 
-def send_message(chat_id, text):
-    return _api("sendMessage", {"chat_id": chat_id, "text": text})
+def send_message(chat_id, text, parse_mode=None):
+    params = {"chat_id": chat_id, "text": text}
+    if parse_mode:
+        params["parse_mode"] = parse_mode
+    return _api("sendMessage", params)
 
 
 def get_updates(offset=None, timeout=0):
@@ -124,36 +127,41 @@ def add_subscriber(cid):
     return True
 
 
-def broadcast(text):
+def broadcast(text, parse_mode=None):
     """Send a message to every subscriber. Returns how many deliveries succeeded."""
     sent = 0
     for cid in subscribers():
         try:
-            send_message(cid, text)
+            send_message(cid, text, parse_mode=parse_mode)
             sent += 1
         except Exception:
             pass
     return sent
 
 
-def broadcast_photo(png_path, caption=""):
+def broadcast_photo(png_path, caption="", parse_mode=None):
     """Send a chart to every subscriber. Returns how many deliveries succeeded."""
     sent = 0
     for cid in subscribers():
         try:
-            send_photo(cid, png_path, caption)
+            send_photo(cid, png_path, caption, parse_mode=parse_mode)
             sent += 1
         except Exception:
             pass
     return sent
 
 
-def send_photo(chat_id, png_path, caption=""):
+def send_photo(chat_id, png_path, caption="", parse_mode=None):
     boundary = "----tg" + uuid.uuid4().hex
     png = Path(png_path).read_bytes()
     parts = [
         f'--{boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n{chat_id}\r\n'.encode(),
         f'--{boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n{caption}\r\n'.encode(),
+    ]
+    if parse_mode:
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="parse_mode"\r\n\r\n{parse_mode}\r\n'.encode())
+    parts += [
         (f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; '
          f'filename="chart.png"\r\nContent-Type: image/png\r\n\r\n').encode()
         + png + b"\r\n",

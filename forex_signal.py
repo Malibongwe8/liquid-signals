@@ -229,7 +229,7 @@ def build_signal(a, params):
     return {"direction": direction, "entry": entry, "tp": tp, "sl": sl, "rr": rr}
 
 
-def render_chart(a, s, path):
+def render_chart(a, s, path, reentry=False):
     candles = a["candles"][-150:]
     n = len(candles)
     d = a["decimals"]
@@ -255,14 +255,24 @@ def render_chart(a, s, path):
         [datetime.fromtimestamp(candles[i]["t"], timezone.utc).strftime("%m-%d %H:%M")
          for i in ticks], rotation=30, ha="right", fontsize=7)
 
-    ax.set_title(f"{a['label']}  {s['direction']} signal  (candles)",
-                 color="#1a9850" if s["direction"] == "BUY" else "#d73027",
-                 fontweight="bold")
+    if reentry:
+        # A re-issued loss: mark it in red so it is unmistakable.
+        ax.set_title(f"RE-ENTRY (previous SL hit)   {a['label']}  {s['direction']}",
+                     color="#b00000", fontweight="bold")
+        ax.text(0.5, 1.01, "LOSS RE-ISSUED — entry = old stop, TP unchanged",
+                transform=ax.transAxes, ha="center", va="bottom",
+                fontsize=10, fontweight="bold", color="white",
+                bbox=dict(facecolor="#b00000", edgecolor="none",
+                          boxstyle="round,pad=0.35"))
+    else:
+        ax.set_title(f"{a['label']}  {s['direction']} signal  (candles)",
+                     color="#1a9850" if s["direction"] == "BUY" else "#d73027",
+                     fontweight="bold")
     ax.set_ylabel("price")
     ax.grid(alpha=0.2)
     ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
-    fig.savefig(path)
+    fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -283,13 +293,16 @@ def caption_for(a, s, params, now):
 
 
 def _reentry_caption(t, s, mult, now):
-    d, un = t["decimals"], t["unit_name"]
+    """Italic (HTML) caption so a re-issued loss is visually unmistakable."""
+    d = t["decimals"]
     return (
-        f"{t['key']}  {s['direction']}  RE-ENTRY (previous SL hit)\n"
+        "<i>"
+        f"\u26a0 {t['key']}  {s['direction']}  \u2014 RE-ENTRY (previous SL hit)\n"
         f"Entry: {s['entry']:.{d}f}   (was the stop)\n"
         f"TP:    {s['tp']:.{d}f}   (unchanged)\n"
         f"SL:    {s['sl']:.{d}f}   ({mult:g}x original risk away)\n"
         f"Time:  {now}"
+        "</i>"
     )
 
 
@@ -322,8 +335,9 @@ def _maybe_reentry(db, t, cfg, now, send=True):
                                            t["tf"], t["period"])
             ra = {"candles": candles, "decimals": t["decimals"], "label": t["key"]}
             png = CHARTS / f"reentry_{t['id']}.png"
-            render_chart(ra, sig, png)
-            n = telegram.broadcast_photo(png, _reentry_caption(t, sig, mult, now))
+            render_chart(ra, sig, png, reentry=True)
+            n = telegram.broadcast_photo(png, _reentry_caption(t, sig, mult, now),
+                                         parse_mode="HTML")
             print(f"  [reentry] chart -> {n} subscriber(s)")
         except Exception as exc:
             print(f"  [reentry] chart/send failed: {exc}")

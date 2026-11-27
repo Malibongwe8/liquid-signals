@@ -60,8 +60,14 @@ Tune it in `config.json`:
 ```
 
 `max` caps how many times a position may recover after losses (`1` = a single
-re-entry; a re-entry that also loses is not re-issued). Each re-entry is linked
-to its parent (`reentry_of`) so the chain is visible in the ledger.
+re-entry; a re-entry that also loses is not re-issued), so **each signal is
+re-issued at most once**. Each re-entry is linked to its parent (`reentry_of`)
+so the chain is visible in the ledger.
+
+To make an updated signal easy to spot, the re-entry is styled differently: its
+Telegram caption is **italic** (`parse_mode=HTML`) and the chart carries a **red
+banner** — `RE-ENTRY (previous SL hit)` — with a red strip reading
+"LOSS RE-ISSUED — entry = old stop, TP unchanged".
 
 ## Files
 
