@@ -1,0 +1,57 @@
+{
+  "poll_seconds": 300,
+  "timeframes": ["5m", "15m", "1h"],
+
+  "telegram": {
+    "comment": "Leave blank in the repo. Provide via env TELEGRAM_TOKEN / TELEGRAM_CHAT_ID or a git-ignored secrets.json",
+    "token": "",
+    "chat_id": null
+  },
+
+  "strategy": {
+    "comment": "Direction = SMA regime (fast>slow => BUY). Levels are ATR-scaled: entry=close, SL=entry -/+ sl_atr*ATR, TP=entry +/- tp_atr*ATR. Override per asset_class by adding a key with the same name (e.g. \"synthetic\").",
+    "default": {
+      "fast": 10,
+      "slow": 30,
+      "atr_period": 14,
+      "sl_atr": 1.5,
+      "tp_atr": 2.5
+    }
+  },
+
+  "watchlist": [
+    { "asset_class": "spot", "group": "crypto", "name": "BTCUSD", "symbol": "BTC-USD", "decimals": 2 },
+
+    { "asset_class": "forex", "group": "majors", "base": "EUR", "quote": "USD" },
+    { "asset_class": "forex", "group": "majors", "base": "GBP", "quote": "USD" },
+    { "asset_class": "forex", "group": "majors", "base": "USD", "quote": "JPY" },
+    { "asset_class": "forex", "group": "majors", "base": "USD", "quote": "CHF" },
+    { "asset_class": "forex", "group": "majors", "base": "USD", "quote": "CAD" },
+    { "asset_class": "forex", "group": "majors", "base": "AUD", "quote": "USD" },
+    { "asset_class": "forex", "group": "majors", "base": "NZD", "quote": "USD" },
+
+    { "asset_class": "forex", "group": "minors", "base": "EUR", "quote": "GBP" },
+    { "asset_class": "forex", "group": "minors", "base": "EUR", "quote": "JPY" },
+    { "asset_class": "forex", "group": "minors", "base": "GBP", "quote": "JPY" },
+    { "asset_class": "forex", "group": "minors", "base": "EUR", "quote": "CHF" },
+    { "asset_class": "forex", "group": "minors", "base": "EUR", "quote": "AUD" },
+    { "asset_class": "forex", "group": "minors", "base": "EUR", "quote": "CAD" },
+    { "asset_class": "forex", "group": "minors", "base": "GBP", "quote": "CHF" },
+    { "asset_class": "forex", "group": "minors", "base": "GBP", "quote": "AUD" },
+    { "asset_class": "forex", "group": "minors", "base": "AUD", "quote": "JPY" },
+    { "asset_class": "forex", "group": "minors", "base": "AUD", "quote": "NZD" },
+    { "asset_class": "forex", "group": "minors", "base": "CAD", "quote": "JPY" },
+    { "asset_class": "forex", "group": "minors", "base": "CHF", "quote": "JPY" },
+    { "asset_class": "forex", "group": "minors", "base": "NZD", "quote": "JPY" },
+    { "asset_class": "forex", "group": "minors", "base": "EUR", "quote": "NZD" },
+    { "asset_class": "forex", "group": "minors", "base": "GBP", "quote": "NZD" },
+
+    { "asset_class": "index", "group": "cash", "name": "US30", "symbol": "^DJI" },
+    { "asset_class": "index", "group": "cash", "name": "US100", "symbol": "^NDX" },
+
+    { "asset_class": "synthetic", "group": "volatility", "name": "Volatility 10", "symbol": "R_10" },
+    { "asset_class": "synthetic", "group": "volatility", "name": "Volatility 25", "symbol": "R_25" },
+    { "asset_class": "synthetic", "group": "volatility", "name": "Volatility 50", "symbol": "R_50" },
+    { "asset_class": "synthetic", "group": "volatility", "name": "Volatility 100", "symbol": "R_100" }
+  ]
+}

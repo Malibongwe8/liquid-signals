@@ -1,0 +1,65 @@
+name: signal-scan
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"   # scan every 5 minutes
+    - cron: "0 13 * * *"    # 21:00 Asia/Shanghai -> send the daily report too
+  workflow_dispatch: {}      # allow manual runs from the Actions tab
+
+permissions:
+  contents: read
+
+# Never let two scans overlap: they would double-settle open trades.
+concurrency:
+  group: signal-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MPLBACKEND: Agg
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Rolling cache holds the regime state + paper-trade ledger between runs.
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            forex_state.json
+            paper_trades.json
+          key: signals-state-${{ github.run_id }}
+          restore-keys: |
+            signals-state-
+
+      - name: Daily report (only on the 21:00 Asia/Shanghai run)
+        if: github.event.schedule == '0 13 * * *'
+        run: python forex_signal.py --report
+
+      - name: Scan
+        run: |
+          if [ -f forex_state.json ]; then
+            python forex_signal.py
+          else
+            python forex_signal.py --seed   # first run: seed state, no message flood
+          fi
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            forex_state.json
+            paper_trades.json
+          key: signals-state-${{ github.run_id }}
