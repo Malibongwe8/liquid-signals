@@ -73,6 +73,25 @@ def _write_control(paused):
     }, indent=2))
 
 
+def _is_weekend(cfg):
+    """True on the configured weekend weekdays (UTC) -> crypto-only universe."""
+    days = set(cfg.get("schedule", {}).get("weekend_days", ["Sat", "Sun"]))
+    return datetime.now(timezone.utc).strftime("%a") in days
+
+
+def _universe(cfg):
+    """Instruments to scan today.
+
+    Weekends (FX/indices closed) use only items flagged ``weekend``; on the
+    other days items flagged ``weekend_only`` are skipped.
+    """
+    items = [w for w in cfg["watchlist"]
+             if w["asset_class"] in ("forex", "index", "spot", "synthetic")]
+    if _is_weekend(cfg):
+        return [w for w in items if w.get("weekend")]
+    return [w for w in items if not w.get("weekend_only")]
+
+
 def _gh(*cmd):
     """Run the gh CLI; returns (returncode, combined output)."""
     try:
@@ -263,6 +282,54 @@ def caption_for(a, s, params, now):
     )
 
 
+def _reentry_caption(t, s, mult, now):
+    d, un = t["decimals"], t["unit_name"]
+    return (
+        f"{t['key']}  {s['direction']}  RE-ENTRY (previous SL hit)\n"
+        f"Entry: {s['entry']:.{d}f}   (was the stop)\n"
+        f"TP:    {s['tp']:.{d}f}   (unchanged)\n"
+        f"SL:    {s['sl']:.{d}f}   ({mult:g}x original risk away)\n"
+        f"Time:  {now}"
+    )
+
+
+def _maybe_reentry(db, t, cfg, now, send=True):
+    """Re-issue a stopped-out trade: entry -> old SL, TP unchanged, wider SL.
+
+    Returns the new trade, or None if re-entry is disabled/exhausted.
+    """
+    r = cfg.get("reentry", {})
+    if not r.get("enabled", True) or t["status"] != "loss":
+        return None
+    if t.get("reentry_count", 0) >= int(r.get("max", 1)):
+        return None
+    risk = abs(t["entry"] - t["sl"])
+    if not risk:
+        return None
+    mult = float(r.get("sl_mult", 2.0))
+    entry, tp = t["sl"], t["tp"]
+    sl = entry - mult * risk if t["direction"] == "BUY" else entry + mult * risk
+    sig = {"direction": t["direction"], "entry": entry, "tp": tp, "sl": sl, "rr": 0.0}
+    a = {"feed": t.get("feed", "index"), "unit": t["unit"],
+         "unit_name": t["unit_name"], "decimals": t["decimals"]}
+    new = tradebook.open_trade(db, t["key"], t["item"], t["tf"], t["symbol"],
+                               t["period"], sig, a, now,
+                               reentry_of=t["id"],
+                               reentry_count=t.get("reentry_count", 0) + 1)
+    if new and send:
+        try:
+            candles, _ = feeds.candles_for(t.get("feed", "index"), t["symbol"],
+                                           t["tf"], t["period"])
+            ra = {"candles": candles, "decimals": t["decimals"], "label": t["key"]}
+            png = CHARTS / f"reentry_{t['id']}.png"
+            render_chart(ra, sig, png)
+            n = telegram.broadcast_photo(png, _reentry_caption(t, sig, mult, now))
+            print(f"  [reentry] chart -> {n} subscriber(s)")
+        except Exception as exc:
+            print(f"  [reentry] chart/send failed: {exc}")
+    return new
+
+
 def scan(cfg, send=True):
     """Serialize scans across processes so trades are never settled twice."""
     if send and _paused():
@@ -285,26 +352,32 @@ def scan(cfg, send=True):
 def _scan(cfg, send=True):
     tfs = cfg.get("timeframes", ["1h"])
 
-    chat_id = telegram.chat_id() or telegram.resolve_chat_id()
-
     CHARTS.mkdir(exist_ok=True)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     db = tradebook.load()
     closed = tradebook.settle(db)
     if send:
         for t in closed:
             try:
-                telegram.send_message(chat_id, tradebook.result_message(t))
+                n = telegram.broadcast(tradebook.result_message(t))
                 print(f"  [closed] {t['key']} {t['status']} "
-                      f"{t['result_units']:+.0f} {t['unit_name']} ({t['r']:+.2f}R)")
+                      f"{t['result_units']:+.0f} {t['unit_name']} ({t['r']:+.2f}R)"
+                      f"  -> {n} subscriber(s)")
             except Exception as exc:
                 print(f"  [closed] {t['key']} !! send failed: {exc}")
+        # Losers are re-issued: entry -> old SL, TP unchanged, wider stop.
+        for t in closed:
+            new = _maybe_reentry(db, t, cfg, now, send=True)
+            if new:
+                d = new["decimals"]
+                print(f"  [reentry] {new['key']} {new['direction']} "
+                      f"entry {new['entry']:.{d}f}  TP {new['tp']:.{d}f}  "
+                      f"SL {new['sl']:.{d}f}")
     tradebook.save(db)
 
     state = json.loads(STATE.read_text()) if STATE.exists() else {}
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    items = [w for w in cfg["watchlist"]
-             if w["asset_class"] in ("forex", "index", "spot", "synthetic")]
+    items = _universe(cfg)
     sent = []
     for item in items:
         name = item.get("name") or f"{item.get('base', '')}/{item.get('quote', '')}"
@@ -332,7 +405,7 @@ def _scan(cfg, send=True):
                 png = CHARTS / f"{key.replace('/', '-').replace(' ', '_')}.png"
                 try:
                     render_chart(a, s, png)
-                    telegram.send_photo(chat_id, png, caption_for(a, s, params, now))
+                    telegram.broadcast_photo(png, caption_for(a, s, params, now))
                 except Exception as exc:
                     print(bias_line + f"   !! failed: {exc}")
                     continue
@@ -353,7 +426,6 @@ def _scan(cfg, send=True):
 
 
 def send_test(cfg):
-    chat_id = telegram.chat_id() or telegram.resolve_chat_id()
     CHARTS.mkdir(exist_ok=True)
     item = [w for w in cfg["watchlist"]
             if w["asset_class"] in ("forex", "index", "spot", "synthetic")][0]
@@ -363,37 +435,38 @@ def send_test(cfg):
     png = CHARTS / "test.png"
     render_chart(a, s, png)
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    res = telegram.send_photo(chat_id, png, "TEST\n" + caption_for(a, s, params, now))
-    print("sent test to chat", chat_id, "ok=", res.get("ok"))
-    return res
+    n = telegram.broadcast_photo(png, "TEST\n" + caption_for(a, s, params, now))
+    print(f"sent test to {n} subscriber(s)")
+    return n
 
 
 def send_report(cfg):
-    chat_id = telegram.chat_id() or telegram.resolve_chat_id()
     db = tradebook.load()
     tradebook.settle(db)
     tradebook.save(db)
-    res = telegram.send_message(chat_id, tradebook.report_text(db))
-    print("sent report to chat", chat_id, "ok=", res.get("ok"))
-    return res
+    n = telegram.broadcast(tradebook.report_text(db))
+    print(f"sent report to {n} subscriber(s)")
+    return n
 
 
 HELP_TG = """\
 liquid-signals bot commands
 
+/start   - join and start receiving signals
 /menu    - show this list
 /status  - run state + open positions + win-rates
 /daily   - today's closed-trade stats
 /weekly  - last 7 days stats
 /monthly - last 30 days stats
 /positions - list open paper positions
-/pause   - stop sending signals (loop stays alive)
-/resume  - resume sending signals"""
+/pause   - stop sending signals (operator)
+/resume  - resume sending signals (operator)"""
 
 
 def setup_bot():
     """Register the '/' command menu with Telegram."""
     cmds = [
+        {"command": "start", "description": "Join and receive signals"},
         {"command": "status", "description": "Run state + win-rates"},
         {"command": "daily", "description": "Today's stats"},
         {"command": "weekly", "description": "Last 7 days stats"},
@@ -407,14 +480,34 @@ def setup_bot():
     print("setMyCommands ok=", res.get("ok"))
 
 
-def run_command(text, cfg):
-    """Map an incoming '/command' to its reply text (and any side effect)."""
+def run_command(text, cfg, from_chat=None):
+    """Map an incoming '/command' to its reply text (and any side effect).
+
+    Anyone may join with /start and then read stats; only the configured
+    operator chat may pause/resume.
+    """
     cmd = text.split()[0].split("@")[0].lower()
+    owner = telegram.chat_id()
+    is_owner = (owner is not None and from_chat is not None
+                and int(from_chat) == int(owner))
     db = tradebook.load()
+
+    if cmd in ("/start", "/menu", "/help"):
+        if from_chat is not None and not is_owner and telegram.add_subscriber(from_chat):
+            return "Connected - you'll receive live signals here.\n\n" + HELP_TG
+        return HELP_TG
+
+    if from_chat is None or int(from_chat) not in telegram.subscribers():
+        return "Send /start to join the signal list."
+
     if cmd == "/pause":
+        if not is_owner:
+            return "Only the operator can pause the system."
         set_paused(True)
         return "PAUSED - signals muted. Send /resume to restart."
     if cmd == "/resume":
+        if not is_owner:
+            return "Only the operator can resume the system."
         set_paused(False)
         return "RUNNING - signals resume on the next scan."
     if cmd in ("/status", "/stats"):
@@ -430,19 +523,16 @@ def run_command(text, cfg):
                 + tradebook.stats_line("Last 30d", tradebook.stats_since(db, 30)))
     if cmd == "/positions":
         return tradebook.positions_text(db)
-    if cmd in ("/menu", "/help", "/start"):
-        return HELP_TG
     return "Unknown command.\n\n" + HELP_TG
 
 
 def handle_commands(cfg):
     """Poll Telegram for operator commands and act on them.
 
-    Only messages from the configured chat are honoured. The update offset is
-    persisted in telegram_offset.json (carried in the runner cache) so a command
-    is never handled twice across chained runs.
+    Anyone may '/start' to join (added to subscribers.json). The update offset
+    is persisted in telegram_offset.json (carried in the runner cache) so a
+    command is never handled twice across chained runs.
     """
-    chat = telegram.chat_id()
     try:
         offset = json.loads(OFFSET.read_text())["offset"] if OFFSET.exists() else None
     except Exception:
@@ -462,17 +552,14 @@ def handle_commands(cfg):
         msg = u.get("message") or {}
         text = (msg.get("text") or "").strip()
         from_chat = (msg.get("chat") or {}).get("id")
-        if not text.startswith("/"):
+        if not from_chat or not text.startswith("/"):
             continue
-        if chat and from_chat != chat:
-            print(f"  [tg] ignored command from foreign chat {from_chat}")
-            continue
-        reply = run_command(text, cfg)
+        reply = run_command(text, cfg, from_chat)
         try:
-            telegram.send_message(from_chat or chat, reply)
+            telegram.send_message(from_chat, reply)
         except Exception as exc:
             print(f"  [tg] reply failed: {exc}")
-        print(f"  [tg] {text.split()[0]} -> {reply.splitlines()[0]}")
+        print(f"  [tg] {text.split()[0]} from {from_chat} -> {reply.splitlines()[0]}")
 
     if last is not None:
         OFFSET.write_text(json.dumps({"offset": last}))

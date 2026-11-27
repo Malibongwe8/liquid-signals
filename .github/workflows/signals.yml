@@ -48,7 +48,7 @@ jobs:
         run: pip install -r requirements.txt
 
       # Rolling cache carries the regime state, paper-trade ledger, the pause
-      # flag and the Telegram update offset between runs.
+      # flag, the Telegram update offset and the subscriber list between runs.
       - name: Restore state
         uses: actions/cache/restore@v4
         with:
@@ -57,6 +57,7 @@ jobs:
             paper_trades.json
             control.json
             telegram_offset.json
+            subscribers.json
           key: signals-state-${{ github.run_id }}
           restore-keys: |
             signals-state-
@@ -94,6 +95,7 @@ jobs:
             paper_trades.json
             control.json
             telegram_offset.json
+            subscribers.json
           key: signals-state-${{ github.run_id }}
 
       # Keep the loop alive: queue the next run before this one exits. The

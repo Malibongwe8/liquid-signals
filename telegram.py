@@ -88,6 +88,66 @@ def set_commands(commands):
     return _api("setMyCommands", {"commands": json.dumps(commands)})
 
 
+SUBSCRIBERS = ROOT / "subscribers.json"
+
+
+def subscribers():
+    """All chat ids that should receive signals: the owner plus every joiner."""
+    ids = []
+    owner = chat_id()
+    if owner:
+        ids.append(int(owner))
+    if SUBSCRIBERS.exists():
+        try:
+            for x in json.loads(SUBSCRIBERS.read_text()).get("chats", []):
+                if int(x) not in ids:
+                    ids.append(int(x))
+        except Exception:
+            pass
+    return ids
+
+
+def add_subscriber(cid):
+    """Register a new member (from /start). True if newly added."""
+    cid = int(cid)
+    data = {"chats": []}
+    if SUBSCRIBERS.exists():
+        try:
+            data = json.loads(SUBSCRIBERS.read_text())
+        except Exception:
+            pass
+    chats = [int(x) for x in data.get("chats", [])]
+    if cid in chats or cid == chat_id():
+        return False
+    chats.append(cid)
+    SUBSCRIBERS.write_text(json.dumps({"chats": chats}, indent=2))
+    return True
+
+
+def broadcast(text):
+    """Send a message to every subscriber. Returns how many deliveries succeeded."""
+    sent = 0
+    for cid in subscribers():
+        try:
+            send_message(cid, text)
+            sent += 1
+        except Exception:
+            pass
+    return sent
+
+
+def broadcast_photo(png_path, caption=""):
+    """Send a chart to every subscriber. Returns how many deliveries succeeded."""
+    sent = 0
+    for cid in subscribers():
+        try:
+            send_photo(cid, png_path, caption)
+            sent += 1
+        except Exception:
+            pass
+    return sent
+
+
 def send_photo(chat_id, png_path, caption=""):
     boundary = "----tg" + uuid.uuid4().hex
     png = Path(png_path).read_bytes()

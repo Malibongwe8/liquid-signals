@@ -37,8 +37,13 @@ def save(db):
     LEDGER.write_text(json.dumps(db, indent=2))
 
 
-def open_trade(db, key, item, tf, symbol, period, sig, a, now):
-    """Open a paper position for a fresh signal (one open per key)."""
+def open_trade(db, key, item, tf, symbol, period, sig, a, now,
+               reentry_of=None, reentry_count=0):
+    """Open a paper position for a fresh signal (one open per key).
+
+    ``reentry_of``/``reentry_count`` mark a position opened as a recovery after
+    an earlier loss; ``reentry_count`` caps how far a recovery chain may go.
+    """
     if any(t["status"] == "open" and t["key"] == key for t in db["trades"]):
         return None
     db["seq"] += 1
@@ -57,6 +62,8 @@ def open_trade(db, key, item, tf, symbol, period, sig, a, now):
         "unit": a["unit"],
         "unit_name": a["unit_name"],
         "decimals": a["decimals"],
+        "reentry_of": reentry_of,
+        "reentry_count": reentry_count,
         "opened_at": int(time.time()),
         "opened_human": now,
         "status": "open",

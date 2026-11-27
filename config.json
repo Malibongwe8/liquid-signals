@@ -2,8 +2,20 @@
   "poll_seconds": 300,
   "timeframes": ["5m", "15m", "1h"],
 
+  "schedule": {
+    "comment": "On these UTC weekdays only items flagged \"weekend\": true are scanned (crypto). Items flagged \"weekend_only\": true are skipped the rest of the week.",
+    "weekend_days": ["Sat", "Sun"]
+  },
+
+  "reentry": {
+    "comment": "After a trade is stopped out, re-issue it: entry moves to the old SL, TP is unchanged, and the new SL is placed sl_mult x the original risk away from the new entry. max = how many times a position may re-enter after losses (1 = one recovery).",
+    "enabled": true,
+    "sl_mult": 2.0,
+    "max": 1
+  },
+
   "telegram": {
-    "comment": "Leave blank in the repo. Provide via env TELEGRAM_TOKEN / TELEGRAM_CHAT_ID or a git-ignored secrets.json",
+    "comment": "Leave blank in the repo. Provide via env TELEGRAM_TOKEN / TELEGRAM_CHAT_ID or a git-ignored secrets.json. New members join by sending /start; they are stored in subscribers.json.",
     "token": "",
     "chat_id": null
   },
@@ -20,7 +32,9 @@
   },
 
   "watchlist": [
-    { "asset_class": "spot", "group": "crypto", "name": "BTCUSD", "symbol": "BTC-USD", "decimals": 2 },
+    { "asset_class": "spot", "group": "crypto", "name": "BTCUSD", "symbol": "BTC-USD", "decimals": 2, "weekend": true },
+    { "asset_class": "spot", "group": "crypto", "name": "ETHUSD", "symbol": "ETH-USD", "decimals": 2, "weekend": true, "weekend_only": true },
+    { "asset_class": "spot", "group": "crypto", "name": "ETHBTC", "symbol": "ETH-BTC", "decimals": 6, "unit_name": "BTC", "weekend": true, "weekend_only": true },
 
     { "asset_class": "forex", "group": "majors", "base": "EUR", "quote": "USD" },
     { "asset_class": "forex", "group": "majors", "base": "GBP", "quote": "USD" },

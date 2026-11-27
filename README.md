@@ -12,15 +12,25 @@ edit that file, not the code, to change the markets or the strategy.
 
 ## Universe
 
-| Group          | Instruments                                             | Data source            |
-| -------------- | ------------------------------------------------------- | ---------------------- |
-| Crypto         | BTCUSD                                                  | Yahoo Finance          |
-| FX majors (7)  | EUR/USD, GBP/USD, USD/JPY, USD/CHF, USD/CAD, AUD/USD, NZD/USD | Yahoo Finance     |
-| FX minors (15) | EUR/GBP, EUR/JPY, GBP/JPY, EUR/CHF, EUR/AUD, EUR/CAD, GBP/CHF, GBP/AUD, AUD/JPY, AUD/NZD, CAD/JPY, CHF/JPY, NZD/JPY, EUR/NZD, GBP/NZD | Yahoo Finance |
-| Cash indices   | US30 (`^DJI`), US100 (`^NDX`)                            | Yahoo Finance          |
-| Volatility     | Volatility 10/25/50/100 (`R_10`/`R_25`/`R_50`/`R_100`)  | Deriv WebSocket API    |
+| Group          | Instruments                                             | Data source            | When        |
+| -------------- | ------------------------------------------------------- | ---------------------- | ----------- |
+| Crypto         | BTCUSD, ETHUSD, ETHBTC                                  | Yahoo Finance          | Always (24/7) |
+| FX majors (7)  | EUR/USD, GBP/USD, USD/JPY, USD/CHF, USD/CAD, AUD/USD, NZD/USD | Yahoo Finance     | Mon–Fri     |
+| FX minors (15) | EUR/GBP, EUR/JPY, GBP/JPY, EUR/CHF, EUR/AUD, EUR/CAD, GBP/CHF, GBP/AUD, AUD/JPY, AUD/NZD, CAD/JPY, CHF/JPY, NZD/JPY, EUR/NZD, GBP/NZD | Yahoo Finance | Mon–Fri |
+| Cash indices   | US30 (`^DJI`), US100 (`^NDX`)                            | Yahoo Finance          | Mon–Fri     |
+| Volatility     | Volatility 10/25/50/100 (`R_10`/`R_25`/`R_50`/`R_100`)  | Deriv WebSocket API    | Mon–Fri     |
 
 Each instrument is scanned on every timeframe in `timeframes` (5m / 15m / 1h).
+
+### Weekend universe (crypto only)
+
+Because FX and stock indices are closed at the weekend, the engine scans a
+reduced universe on `schedule.weekend_days` (UTC `Sat`/`Sun`):
+
+* items flagged `"weekend": true` (BTCUSD, ETHUSD, ETHBTC) are **always** scanned;
+* items flagged `"weekend_only": true` (ETHUSD, ETHBTC) are **skipped** Mon–Fri and
+  only appear at the weekend;
+* everything else (FX, indices, volatility) is skipped at the weekend.
 
 ## Strategy (unchanged core)
 
@@ -31,6 +41,27 @@ Each instrument is scanned on every timeframe in `timeframes` (5m / 15m / 1h).
   * `TP = entry + tp_atr × ATR` (BUY) / `entry − tp_atr × ATR` (SELL)
 * A message is sent **only when the regime changes** for an instrument+timeframe
   (state dedup), so the channel is not spammed with the same bias every loop.
+
+## Loss re-entry
+
+When a paper trade closes as a **loss** (its SL was hit), the engine
+automatically re-issues the same idea once, so a stop-out is followed by a
+second attempt around the old stop:
+
+* **Entry** moves to where the **SL** was (`old SL`);
+* **TP** stays exactly where it was;
+* **SL** is placed `reentry.sl_mult` × the original risk **away from the new entry**;
+* direction is unchanged (a stopped-out BUY re-enters as a BUY).
+
+Tune it in `config.json`:
+
+```json
+"reentry": { "enabled": true, "sl_mult": 2.0, "max": 1 }
+```
+
+`max` caps how many times a position may recover after losses (`1` = a single
+re-entry; a re-entry that also loses is not re-issued). Each re-entry is linked
+to its parent (`reentry_of`) so the chain is visible in the ledger.
 
 ## Files
 
@@ -45,7 +76,8 @@ Each instrument is scanned on every timeframe in `timeframes` (5m / 15m / 1h).
 | `.github/workflows/`    | Scheduled runs on GitHub Actions                             |
 
 Runtime files created at run time (and git-ignored): `forex_state.json`,
-`paper_trades.json`, `control.json`, `telegram_offset.json`, `charts/`.
+`paper_trades.json`, `control.json`, `telegram_offset.json`, `subscribers.json`,
+`charts/`.
 
 ## Credentials
 
@@ -79,6 +111,7 @@ any time the loop is live:
 
 | Message      | What it does                                             |
 | ------------ | ------------------------------------------------------- |
+| `/start`     | **Join the signal list** — you receive every signal from then on |
 | `/status`    | Run state (PAUSED/RUNNING) + open positions + win-rates |
 | `/daily`     | Today's closed-trade stats                              |
 | `/weekly`    | Last 7 days stats                                       |
@@ -88,10 +121,20 @@ any time the loop is live:
 | `/resume`    | Start sending signals again                             |
 | `/menu`      | List the commands                                       |
 
-Only messages from the configured chat id are honoured. `/pause` only **mutes**
-signals and paper trades — the loop stays alive precisely so `/resume` still
-reaches it. Run `python forex_signal.py --setup-bot` once to register the `/`
-menu in the Telegram client (the workflow also does this on every run).
+### Who receives signals
+
+Signals are broadcast to the **owner** (the configured chat id) **and to every
+subscriber** in `subscribers.json`. Anyone who messages the bot `/start` is
+added to that list and starts receiving signals immediately — no restart needed
+(the runner polls for commands on every scan). `subscribers.json` is runtime
+state, carried between runs in the GitHub cache and never committed.
+
+Only the **owner** may `/pause` and `/resume`; a subscriber trying it is told
+"Only the operator can…" Anyone who has not joined gets "Send /start to join the
+signal list." `/pause` only **mutes** signals and paper trades — the loop stays
+alive precisely so `/resume` still reaches it. Run
+`python forex_signal.py --setup-bot` once to register the `/` menu in the
+Telegram client (the workflow also does this on every run).
 
 ### From the CLI
 
@@ -168,13 +211,16 @@ Append an entry to `watchlist` in `config.json`:
 ```json
 { "asset_class": "forex",     "group": "minors", "base": "EUR", "quote": "TRY" }
 { "asset_class": "index",     "group": "cash",   "name": "US500", "symbol": "^GSPC" }
-{ "asset_class": "spot",      "group": "crypto", "name": "ETHUSD", "symbol": "ETH-USD", "decimals": 2 }
+{ "asset_class": "spot",      "group": "crypto", "name": "SOLUSD", "symbol": "SOL-USD", "decimals": 2 }
+{ "asset_class": "spot",      "group": "crypto", "name": "ETHBTC", "symbol": "ETH-BTC", "decimals": 6, "weekend": true, "weekend_only": true }
 { "asset_class": "synthetic", "group": "volatility", "name": "Volatility 75", "symbol": "R_75" }
 ```
 
 `asset_class` selects the feed: `forex` / `index` / `spot` use Yahoo Finance
 (carrying a Yahoo `symbol`, or `base`+`quote` for FX); `synthetic` uses the
-Deriv WebSocket API and carries the Deriv `symbol` (e.g. `R_10`).
+Deriv WebSocket API and carries the Deriv `symbol` (e.g. `R_10`). Add
+`"weekend": true` to keep an instrument in the weekend (crypto) universe, and
+`"weekend_only": true` to show it *only* at the weekend.
 
 ## Tuning the strategy
 
