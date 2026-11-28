@@ -56,21 +56,38 @@ def load_config():
     return json.loads((ROOT / "config.json").read_text())
 
 
-def _paused():
-    """True when the operator has paused signal sending (control.json)."""
+def _read_control():
+    """The runtime control flags (paused, group) from control.json."""
     if CONTROL.exists():
         try:
-            return bool(json.loads(CONTROL.read_text()).get("paused"))
+            return json.loads(CONTROL.read_text())
         except Exception:
-            return False
-    return False
+            return {}
+    return {}
 
 
-def _write_control(paused):
-    CONTROL.write_text(json.dumps({
-        "paused": paused,
-        "updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-    }, indent=2))
+def _write_control(**fields):
+    """Merge flags into control.json (survives across runs via the cache)."""
+    data = _read_control()
+    data.update(fields)
+    data["updated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    CONTROL.write_text(json.dumps(data, indent=2))
+
+
+def _paused():
+    """True when the operator has paused signal sending (control.json)."""
+    return bool(_read_control().get("paused"))
+
+
+def _item_name(item):
+    """Display name of a watchlist entry (name, or BASE/QUOTE for FX)."""
+    return item.get("name") or f"{item.get('base', '')}{item.get('quote', '')}"
+
+
+def _active_group(cfg):
+    """The group currently being scanned (control.json override, else config)."""
+    g = _read_control().get("group") or cfg.get("groups", {}).get("active") or "A"
+    return str(g).upper()
 
 
 def _is_weekend(cfg):
@@ -79,17 +96,42 @@ def _is_weekend(cfg):
     return datetime.now(timezone.utc).strftime("%a") in days
 
 
-def _universe(cfg):
-    """Instruments to scan today.
+def _group_match(item, spec):
+    """True if a watchlist entry belongs to the group described by ``spec``."""
+    if not spec:
+        return True  # group A / no rule = every open pair
+    names = spec.get("names")
+    if names:
+        return _item_name(item) in names
+    fx_group = spec.get("fx_group")
+    if fx_group:
+        return item["asset_class"] == "forex" and item.get("group") == fx_group
+    groups = spec.get("groups")
+    if groups:
+        return item.get("group") in groups
+    classes = spec.get("asset_classes")
+    if classes:
+        return item["asset_class"] in classes
+    return True
 
-    Weekends (FX/indices closed) use only items flagged ``weekend``; on the
-    other days items flagged ``weekend_only`` are skipped.
+
+def _universe(cfg):
+    """Instruments to scan right now, after the weekend + group filters.
+
+    Weekends (FX/indices closed) use only items flagged ``weekend``. On other
+    days the *default* group A also drops items flagged ``weekend_only``; an
+    explicitly chosen group (B/C) instead scans exactly its own members.
     """
     items = [w for w in cfg["watchlist"]
              if w["asset_class"] in ("forex", "index", "spot", "synthetic")]
-    if _is_weekend(cfg):
+    weekend = _is_weekend(cfg)
+    if weekend:
         return [w for w in items if w.get("weekend")]
-    return [w for w in items if not w.get("weekend_only")]
+    g = _active_group(cfg)
+    spec = cfg.get("groups", {}).get("definitions", {}).get(g)
+    if g == "A" or spec is None:
+        return [w for w in items if not w.get("weekend_only")]
+    return [w for w in items if _group_match(w, spec)]
 
 
 def _gh(*cmd):
@@ -122,10 +164,23 @@ def set_paused(paused, remote=False):
     the one the runner uses. The Telegram handler runs *on the runner*, so it
     calls this with ``remote=False``.
     """
-    _write_control(paused)
+    _write_control(paused=paused)
     print(f"signals -> {'PAUSED' if paused else 'RUNNING'}  (control.json)")
     if remote:
         _dispatch("pause" if paused else "resume")
+
+
+def set_group(group, remote=False):
+    """Select which group is scanned (A/B/C), persisted in control.json.
+
+    ``remote=True`` (CLI on your own machine) also pushes it to the live GitHub
+    loop; the Telegram handler runs on the runner so it uses ``remote=False``.
+    """
+    group = str(group).upper()
+    _write_control(group=group)
+    print(f"scan group -> {group}  (control.json)")
+    if remote:
+        _dispatch(f"group:{group}")
 
 
 def _dispatch(command):
@@ -468,7 +523,8 @@ liquid-signals bot commands
 
 /start   - join and start receiving signals
 /menu    - show this list
-/status  - run state + open positions + win-rates
+/status  - run state + active group + win-rates
+/group   - show or switch the scan group (/group a|b|c) (operator)
 /daily   - today's closed-trade stats
 /weekly  - last 7 days stats
 /monthly - last 30 days stats
@@ -477,10 +533,23 @@ liquid-signals bot commands
 /resume  - resume sending signals (operator)"""
 
 
+def _groups_text(cfg):
+    """Human-readable list of the configured groups, marking the active one."""
+    defs = cfg.get("groups", {}).get("definitions", {})
+    cur = _active_group(cfg)
+    lines = [f"Active group: {cur}"]
+    for k, v in defs.items():
+        mark = "  <- active" if k == cur else ""
+        lines.append(f"  {k} - {v.get('label', '')}{mark}")
+    lines.append("Switch with /group a|b|c (operator).")
+    return "\n".join(lines)
+
+
 def setup_bot():
     """Register the '/' command menu with Telegram."""
     cmds = [
         {"command": "start", "description": "Join and receive signals"},
+        {"command": "group", "description": "Show or switch the scan group"},
         {"command": "status", "description": "Run state + win-rates"},
         {"command": "daily", "description": "Today's stats"},
         {"command": "weekly", "description": "Last 7 days stats"},
@@ -525,7 +594,20 @@ def run_command(text, cfg, from_chat=None):
         set_paused(False)
         return "RUNNING - signals resume on the next scan."
     if cmd in ("/status", "/stats"):
-        return tradebook.status_text(db, _paused())
+        return tradebook.status_text(db, _paused(), _active_group(cfg))
+    if cmd == "/group":
+        parts = text.split()
+        defs = cfg.get("groups", {}).get("definitions", {})
+        if len(parts) < 2:
+            return _groups_text(cfg)
+        g = parts[1].upper()
+        if g not in defs:
+            return f"Unknown group {g}. Options: {', '.join(defs)}."
+        if not is_owner:
+            return "Only the operator can change the scan group."
+        set_group(g)
+        return (f"Scan group set to {g} - {defs[g].get('label', '')}.\n"
+                "Signals now follow this group.")
     if cmd == "/daily":
         return (f"DAILY  {tradebook.today()}\n"
                 + tradebook.stats_line("Today", tradebook.stats(db, tradebook.today())))
@@ -588,7 +670,7 @@ liquid-signals - intraday signal engine
   python forex_signal.py --test       send one TEST chart to Telegram
   python forex_signal.py --report     send the daily report to Telegram
 
-  python forex_signal.py --status     run state + open book + win-rates
+  python forex_signal.py --status     run state + active group + win-rates
   python forex_signal.py --daily      today's closed-trade stats
   python forex_signal.py --weekly     last 7 days stats
   python forex_signal.py --monthly    last 30 days stats
@@ -596,10 +678,12 @@ liquid-signals - intraday signal engine
 
   python forex_signal.py --pause      stop sending signals (mutes the loop)
   python forex_signal.py --resume     resume sending signals
+  python forex_signal.py --groups     list the scan groups
+  python forex_signal.py --group B    scan only group A/B/C (A=all, B=majors, C=metals+crypto)
   python forex_signal.py --setup-bot  register the Telegram '/' command menu
 
-The same controls are available from Telegram: send /status, /daily, /weekly,
-/monthly, /positions, /pause, /resume or /menu to the bot.
+The same controls are available from Telegram: send /status, /group, /daily,
+/weekly, /monthly, /positions, /pause, /resume or /menu to the bot.
 """
 
 
@@ -628,8 +712,18 @@ def main():
         cmd = args[args.index("--command") + 1].strip().lower() if len(args) > 1 else ""
         if cmd in ("pause", "resume"):
             set_paused(cmd == "pause")
+        elif cmd.startswith("group:"):
+            set_group(cmd.split(":", 1)[1])
         else:
             print(f"ignored unknown command: {cmd!r}")
+    elif "--groups" in args:
+        print(_groups_text(cfg))
+    elif "--group" in args:
+        i = args.index("--group")
+        if len(args) > i + 1:
+            set_group(args[i + 1], remote=True)
+        else:
+            print(_groups_text(cfg))
     elif "--setup-bot" in args:
         setup_bot()
     elif "--positions" in args:
@@ -645,7 +739,7 @@ def main():
         print("MONTHLY STATS  (last 30 days)")
         print(tradebook.stats_line("Last 30d", tradebook.stats_since(tradebook.load(), 30)))
     elif "--status" in args or "--stats" in args:
-        print(tradebook.status_text(tradebook.load(), _paused()))
+        print(tradebook.status_text(tradebook.load(), _paused(), _active_group(cfg)))
     elif "--test" in args:
         send_test(cfg)
     elif "--report" in args:

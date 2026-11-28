@@ -14,6 +14,16 @@
     "max": 1
   },
 
+  "groups": {
+    "comment": "Signal filters. 'active' is the group scanned by default; switch live with the Telegram /group command or CLI --group. A = everything open, B = FX majors, C = metals + crypto.",
+    "active": "A",
+    "definitions": {
+      "A": { "label": "All pairs open" },
+      "B": { "label": "Majors currencies", "fx_group": "majors" },
+      "C": { "label": "Metals + crypto", "names": ["XAUUSD", "BTCUSD", "ETHUSD", "ETHBTC"] }
+    }
+  },
+
   "telegram": {
     "comment": "Leave blank in the repo. Provide via env TELEGRAM_TOKEN / TELEGRAM_CHAT_ID or a git-ignored secrets.json. New members join by sending /start; they are stored in subscribers.json.",
     "token": "",
@@ -32,6 +42,8 @@
   },
 
   "watchlist": [
+    { "asset_class": "index", "group": "metals", "name": "XAUUSD", "symbol": "GC=F", "decimals": 2, "unit_name": "USD" },
+
     { "asset_class": "spot", "group": "crypto", "name": "BTCUSD", "symbol": "BTC-USD", "decimals": 2, "weekend": true },
     { "asset_class": "spot", "group": "crypto", "name": "ETHUSD", "symbol": "ETH-USD", "decimals": 2, "weekend": true, "weekend_only": true },
     { "asset_class": "spot", "group": "crypto", "name": "ETHBTC", "symbol": "ETH-BTC", "decimals": 6, "unit_name": "BTC", "weekend": true, "weekend_only": true },

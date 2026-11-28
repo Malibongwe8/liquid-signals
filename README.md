@@ -15,6 +15,7 @@ edit that file, not the code, to change the markets or the strategy.
 | Group          | Instruments                                             | Data source            | When        |
 | -------------- | ------------------------------------------------------- | ---------------------- | ----------- |
 | Crypto         | BTCUSD, ETHUSD, ETHBTC                                  | Yahoo Finance          | Always (24/7) |
+| Metals         | XAUUSD (`GC=F`)                                         | Yahoo Finance          | Mon–Fri     |
 | FX majors (7)  | EUR/USD, GBP/USD, USD/JPY, USD/CHF, USD/CAD, AUD/USD, NZD/USD | Yahoo Finance     | Mon–Fri     |
 | FX minors (15) | EUR/GBP, EUR/JPY, GBP/JPY, EUR/CHF, EUR/AUD, EUR/CAD, GBP/CHF, GBP/AUD, AUD/JPY, AUD/NZD, CAD/JPY, CHF/JPY, NZD/JPY, EUR/NZD, GBP/NZD | Yahoo Finance | Mon–Fri |
 | Cash indices   | US30 (`^DJI`), US100 (`^NDX`)                            | Yahoo Finance          | Mon–Fri     |
@@ -31,6 +32,34 @@ reduced universe on `schedule.weekend_days` (UTC `Sat`/`Sun`):
 * items flagged `"weekend_only": true` (ETHUSD, ETHBTC) are **skipped** Mon–Fri and
   only appear at the weekend;
 * everything else (FX, indices, volatility) is skipped at the weekend.
+
+### Groups (signal filter)
+
+You can restrict scanning to a **group** of instruments, defined in
+`config.json` under `groups`:
+
+| Group | Label              | Members                                                  |
+| ----- | ------------------ | -------------------------------------------------------- |
+| `A`   | All pairs open     | every instrument (the default)                           |
+| `B`   | Majors currencies  | the 7 FX majors                                          |
+| `C`   | Metals + crypto    | XAUUSD, BTCUSD, ETHUSD, ETHBTC                           |
+
+The active group is set in `groups.active`, and can be switched live without
+restarting anything:
+
+* **Telegram** — `/group` shows the list and the active group; `/group a|b|c`
+  switches it (operator only).
+* **CLI** — `python forex_signal.py --groups` lists them;
+  `python forex_signal.py --group c` switches (and pushes it to the live loop).
+
+The choice is stored in `control.json` (like the pause flag) so it survives
+across chained runs. A group filter is applied **after** the weekend rule, so on
+weekends group C still resolves to the crypto that actually trades
+(BTCUSD/ETHUSD/ETHBTC). Picking an explicit group (B/C) also scans its
+`weekend_only` members on weekdays, i.e. `/group c` gives all four members.
+
+> Group A keeps the smart default: FX/indices/volatility + BTCUSD on weekdays,
+> crypto only at the weekend. Groups B and C scan exactly what they list.
 
 ## Strategy (unchanged core)
 
@@ -118,7 +147,8 @@ any time the loop is live:
 | Message      | What it does                                             |
 | ------------ | ------------------------------------------------------- |
 | `/start`     | **Join the signal list** — you receive every signal from then on |
-| `/status`    | Run state (PAUSED/RUNNING) + open positions + win-rates |
+| `/status`    | Run state (PAUSED/RUNNING) + active group + win-rates   |
+| `/group`     | Show the groups; `/group a\|b\|c` switches the scan group |
 | `/daily`     | Today's closed-trade stats                              |
 | `/weekly`    | Last 7 days stats                                       |
 | `/monthly`   | Last 30 days stats                                      |
@@ -151,6 +181,8 @@ Telegram client (the workflow also does this on every run).
 | `--weekly`   | Last 7 days stats                                                   |
 | `--monthly`  | Last 30 days stats                                                  |
 | `--positions`| List the currently open paper positions                             |
+| `--groups`   | List the scan groups (A/B/C)                                        |
+| `--group X`  | Scan only group X (A=all, B=majors, C=metals+crypto)                |
 | `--pause`    | Stop sending signals everywhere                                     |
 | `--resume`   | Start sending signals again                                         |
 | `--setup-bot`| Register the Telegram `/` command menu                              |
@@ -171,7 +203,12 @@ flag and print a clear message that the GitHub side was not changed.
 python forex_signal.py --pause     # mute
 python forex_signal.py --status    # confirm: STATUS PAUSED
 python forex_signal.py --resume    # unmute
+python forex_signal.py --group c   # scan only XAUUSD/BTCUSD/ETHUSD/ETHBTC
 ```
+
+`--group X` works the same way as `--pause`: it writes the local flag and
+dispatches `group:X` to the live loop (which applies it on its next poll). On
+the runner the Telegram `/group` command sets it directly.
 
 ## Running on GitHub
 

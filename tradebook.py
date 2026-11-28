@@ -216,10 +216,13 @@ def positions_text(db):
     return "\n".join(lines)
 
 
-def status_text(db, paused):
-    """Compact dashboard: run state, open book, and win-rates over time."""
+def status_text(db, paused, group=None):
+    """Compact dashboard: run state, active group, open book, and win-rates."""
+    head = f"STATUS   {'PAUSED' if paused else 'RUNNING'}"
+    if group:
+        head += f"   group {group}"
     lines = [
-        f"STATUS   {'PAUSED' if paused else 'RUNNING'}",
+        head,
         "",
         positions_text(db),
         "",
